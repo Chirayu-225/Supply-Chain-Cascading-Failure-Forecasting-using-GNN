@@ -1,0 +1,13 @@
+# Data generation (works anywhere, already installed if you ran build_dataset.py)
+numpy
+pandas
+networkx
+
+# Baseline model (train_baseline.py)
+scikit-learn
+
+# GNN model (train_gnn.py) -- you've already confirmed these versions work:
+# torch==2.8.0+cpu, torch_geometric==2.8.0.post1, torch_geometric_temporal
+torch
+torch_geometric
+torch_geometric_temporal
