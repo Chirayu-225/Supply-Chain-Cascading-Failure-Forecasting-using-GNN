@@ -1,7 +1,8 @@
-# Large generated files -- regenerate with build_dataset.py / baseline_features.py
-# rather than committing (baseline_dataset.csv exceeds GitHub's 100MB file limit)
-output/baseline_dataset.csv
-output/cascade_log.csv.gz
+# Dataset -- never committed; regenerate with build_dataset.py / baseline_features.py
+# (baseline_dataset.csv and cascade_log.csv exceed GitHub's 100MB file limit)
+*.csv
+*.csv.gz
+cascade_log.csv/
 output/cascade_forecast_node*.png
 
 # Trained model weights (regenerate with train_gnn.py) -- small enough to keep if you prefer,

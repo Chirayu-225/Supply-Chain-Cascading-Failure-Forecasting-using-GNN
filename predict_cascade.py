@@ -25,10 +25,10 @@ import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 import networkx as nx
-from torch_geometric.utils import add_self_loops
-
 from train_gnn import DCRNNPredictor, DEVICE
-from pyg_loader_example import load_raw, build_static_edge_index, build_static_node_features
+from pyg_loader_example import (
+    load_raw, build_static_edge_index, build_static_node_features, build_model_ready_edges,
+)
 
 
 def load_trained_model(output_dir="output"):
@@ -46,10 +46,8 @@ def build_graph_objects(output_dir="output"):
     edge_index_np, edge_attr_np = build_static_edge_index(edges, node_id_to_idx)
     static_features, feature_names = build_static_node_features(nodes, node_id_to_idx)
 
-    edge_index_raw = torch.tensor(edge_index_np, dtype=torch.long, device=DEVICE)
-    edge_weight_raw = torch.tensor(edge_attr_np[:, 1], dtype=torch.float32, device=DEVICE).clamp(min=0.1)
-    edge_index, edge_weight = add_self_loops(
-        edge_index_raw, edge_weight_raw, fill_value=0.01, num_nodes=static_features.shape[0]
+    edge_index, edge_weight = build_model_ready_edges(
+        edge_index_np, edge_attr_np, static_features.shape[0], DEVICE
     )
     return nodes, edges, node_id_to_idx, idx_to_node_id, edge_index, edge_weight, static_features
 

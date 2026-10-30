@@ -76,6 +76,48 @@ def build_temporal_signal_for_one_sim(sim_id, log, static_node_features, node_id
     return feature_snapshots  # list of [n_nodes, n_features] arrays, one per timestep
 
 
+def build_model_ready_edges(edge_index_np, edge_attr_np, num_nodes, device):
+    """Builds the final edge_index/edge_weight tensors used by both train_gnn.py and
+    predict_cascade.py -- centralized here so the two stay in sync automatically.
+
+    Includes an out-degree dilution correction. DCRNN's diffusion convolution
+    normalizes each source node's outgoing signal to sum to (approximately) a fixed
+    budget, regardless of how many downstream neighbors it has -- so a node with 8
+    real neighbors effectively transmits a much weaker signal to any ONE of them than
+    a node with only 1 neighbor does, even if the individual edge criticality is far
+    higher. Diagnostic testing found exactly this: a node with a single low-criticality
+    (0.005) edge produced a correctly detected downstream signal, while a different
+    node with 8 edges -- including one at criticality 0.72, the highest in the
+    comparison -- produced no detectable signal at all for any of its real neighbors.
+
+    Fix: pre-multiply each edge's weight by its source node's out-degree (count of
+    real outgoing edges), so that after DCRNN's internal per-source normalization,
+    the effective signal reaching each individual neighbor is restored closer to that
+    edge's true criticality, independent of how many neighbors the source has.
+    """
+    import torch
+    from torch_geometric.utils import add_self_loops
+
+    edge_index_raw = torch.tensor(edge_index_np, dtype=torch.long, device=device)
+    edge_weight_raw = torch.tensor(edge_attr_np[:, 1], dtype=torch.float32, device=device).clamp(min=0.1)
+
+    # out-degree (real edges only, not self-loops) per source node
+    sources = edge_index_raw[0]
+    out_degree_count = torch.zeros(num_nodes, device=device)
+    out_degree_count.scatter_add_(0, sources, torch.ones_like(sources, dtype=torch.float32))
+    out_degree_count = out_degree_count.clamp(min=1.0)  # nodes with 0 real out-edges: no-op
+
+    edge_weight_corrected = edge_weight_raw * out_degree_count[sources]
+
+    # tiny self-loop, still needed to avoid divide-by-zero for true zero-out-degree
+    # (retail-tier) nodes -- scaled down further since real edges are now larger in
+    # magnitude than before, to keep the self-loop from becoming relatively dominant
+    edge_index, edge_weight = add_self_loops(
+        edge_index_raw, edge_weight_corrected, fill_value=0.01, num_nodes=num_nodes
+    )
+    return edge_index, edge_weight
+
+
 if __name__ == "__main__":
     nodes, edges, log, meta = load_raw()
     node_id_to_idx = {nid: i for i, nid in enumerate(sorted(nodes.node_id.unique()))}

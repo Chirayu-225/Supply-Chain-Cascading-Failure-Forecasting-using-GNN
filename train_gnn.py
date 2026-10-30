@@ -24,13 +24,12 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from torch_geometric.utils import add_self_loops
 from torch_geometric_temporal.nn.recurrent import DCRNN
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 from pyg_loader_example import (
     load_raw, build_static_edge_index, build_static_node_features,
-    build_temporal_signal_for_one_sim,
+    build_temporal_signal_for_one_sim, build_model_ready_edges,
 )
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,27 +58,17 @@ def get_sim_ids(meta, min_affected=2, max_sims=None):
     return ids
 
 
-def train(output_dir="output", n_train_sims=400, n_test_sims=100, epochs=5, hidden_dim=32, lr=0.003, pos_weight=25.0):
+def train(output_dir="output", n_train_sims=400, n_test_sims=100, epochs=5, hidden_dim=32, lr=0.003, pos_weight=2.0):
     nodes, edges, log, meta = load_raw(output_dir)
     node_id_to_idx = {nid: i for i, nid in enumerate(sorted(nodes.node_id.unique()))}
     edge_index_np, edge_attr_np = build_static_edge_index(edges, node_id_to_idx)
     static_features, feature_names = build_static_node_features(nodes, node_id_to_idx)
 
-    edge_index_raw = torch.tensor(edge_index_np, dtype=torch.long, device=DEVICE)
-    # criticality as edge weight, floored away from 0 -- DCRNN's diffusion convolution
-    # normalizes by node out-degree, and a weight of ~0 on the only outgoing edge of a
-    # low-degree node behaves like a zero-degree node numerically and produces NaNs
-    edge_weight_raw = torch.tensor(edge_attr_np[:, 1], dtype=torch.float32, device=DEVICE).clamp(min=0.1)
-
-    # retail-tier nodes have zero OUT-degree by construction (they don't supply anyone) --
-    # DCRNN's diffusion convolution divides by out-degree, so a true zero-out-degree node
-    # causes a divide-by-zero -> NaN that poisons the whole forward pass. Adding a tiny
-    # self-loop to every node guarantees out-degree >= 1 everywhere WITHOUT dominating the
-    # real supplier edges -- a self-loop weight of 1.0 would be 10x the floor weight (0.1)
-    # on real edges, causing the model to mostly "listen to itself" instead of its
-    # neighbors and understating cascade spread.
-    edge_index, edge_weight = add_self_loops(
-        edge_index_raw, edge_weight_raw, fill_value=0.01, num_nodes=static_features.shape[0]
+    # See pyg_loader_example.build_model_ready_edges for why this correction exists:
+    # DCRNN's diffusion normalization dilutes signal from high-out-degree nodes, so
+    # each edge is pre-scaled by its source's out-degree to counteract that.
+    edge_index, edge_weight = build_model_ready_edges(
+        edge_index_np, edge_attr_np, static_features.shape[0], DEVICE
     )
 
     sim_ids = get_sim_ids(meta, min_affected=2)
@@ -114,6 +103,15 @@ def train(output_dir="output", n_train_sims=400, n_test_sims=100, epochs=5, hidd
             # pos_weight counteracts the ~0.5% positive rate -- without it, plain BCE lets the
             # model get a good loss by mostly predicting "stays whatever it was", never really
             # learning to propagate a disruption signal along edges to un-disrupted neighbors.
+            # IMPORTANT: pos_weight=25 (an earlier value) was too aggressive -- diagnostic testing
+            # showed the model instead learned to memorize which nodes are CHRONICALLY vulnerable
+            # across many training simulations (a marginal base-rate shortcut, exploitable via
+            # static features like low resilience / high in-degree) rather than conditioning on
+            # the actual current seed/state input. pos_weight=6 was a partial fix (one seed's
+            # single real neighbor was detected correctly, but a different seed's 8 real
+            # neighbors -- including its highest-criticality edge -- were still missed entirely).
+            # Lowered further to 2 here, tried together with the out-degree dilution correction
+            # in build_model_ready_edges(), to leave even less room for the base-rate shortcut.
             # Only applied while training; evaluation still reports raw sigmoid probabilities.
             loss = F.binary_cross_entropy_with_logits(logit, target, pos_weight=pos_weight_tensor)
             if train_mode:
